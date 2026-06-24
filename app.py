@@ -136,21 +136,37 @@ class RouteCheckResponse(BaseModel):
 # Global model storage
 models = {}
 
-def load_models():
-    """Load YOLO models"""
+def get_model(model_name: str):
+    """Lazy load models only when needed"""
     global models
 
+    if model_name in models:
+        return models[model_name]
+
+    model_paths = {
+        "road_damage": ROAD_DAMAGE_MODEL_PATH,
+        "face": FACE_MODEL_PATH,
+        "plate": PLATE_MODEL_PATH
+    }
+
+    path = model_paths.get(model_name)
+    if path and path.exists():
+        print(f"Loading {model_name} model...")
+        models[model_name] = YOLO(str(path))
+        print(f"Loaded {model_name} model from {path}")
+        return models[model_name]
+
+    return None
+
+def load_models():
+    """Check if models exist (don't load them yet to save memory)"""
+    print("Models will be loaded on-demand to save memory")
     if ROAD_DAMAGE_MODEL_PATH.exists():
-        models["road_damage"] = YOLO(str(ROAD_DAMAGE_MODEL_PATH))
-        print(f"Loaded road damage model from {ROAD_DAMAGE_MODEL_PATH}")
-
+        print(f"Road damage model available at {ROAD_DAMAGE_MODEL_PATH}")
     if FACE_MODEL_PATH.exists():
-        models["face"] = YOLO(str(FACE_MODEL_PATH))
-        print(f"Loaded face detection model from {FACE_MODEL_PATH}")
-
+        print(f"Face detection model available at {FACE_MODEL_PATH}")
     if PLATE_MODEL_PATH.exists():
-        models["plate"] = YOLO(str(PLATE_MODEL_PATH))
-        print(f"Loaded license plate model from {PLATE_MODEL_PATH}")
+        print(f"License plate model available at {PLATE_MODEL_PATH}")
 
 # Blur operations
 def gaussian_blur_region(frame, x1, y1, x2, y2, strength=8.0):
@@ -186,13 +202,14 @@ def expand_box(x1, y1, x2, y2, scale, W, H):
 
 def detect_road_damage(frame, conf_threshold=0.5):
     """Detect road damage in frame"""
-    if "road_damage" not in models:
+    model = get_model("road_damage")
+    if model is None:
         return [], frame
 
     h_ori, w_ori = frame.shape[:2]
     frame_resized = cv2.resize(frame, (640, 640), interpolation=cv2.INTER_AREA)
 
-    results = models["road_damage"].predict(frame_resized, conf=conf_threshold, verbose=False)
+    results = model.predict(frame_resized, conf=conf_threshold, verbose=False)
 
     detections = []
     for result in results:
@@ -230,17 +247,21 @@ def detect_and_blur_privacy(frame, blur_faces=True, blur_plates=True,
     H, W = frame.shape[:2]
     all_boxes = []
 
-    if blur_faces and "face" in models:
-        results = models["face"](frame, conf=conf_threshold, verbose=False)
-        if results and results[0].boxes is not None:
-            for box in results[0].boxes.xyxy.cpu().numpy():
-                all_boxes.append(tuple(map(int, box)))
+    if blur_faces:
+        face_model = get_model("face")
+        if face_model:
+            results = face_model(frame, conf=conf_threshold, verbose=False)
+            if results and results[0].boxes is not None:
+                for box in results[0].boxes.xyxy.cpu().numpy():
+                    all_boxes.append(tuple(map(int, box)))
 
-    if blur_plates and "plate" in models:
-        results = models["plate"](frame, conf=conf_threshold, verbose=False)
-        if results and results[0].boxes is not None:
-            for box in results[0].boxes.xyxy.cpu().numpy():
-                all_boxes.append(tuple(map(int, box)))
+    if blur_plates:
+        plate_model = get_model("plate")
+        if plate_model:
+            results = plate_model(frame, conf=conf_threshold, verbose=False)
+            if results and results[0].boxes is not None:
+                for box in results[0].boxes.xyxy.cpu().numpy():
+                    all_boxes.append(tuple(map(int, box)))
 
     # Apply blur to each detected region
     for (x1, y1, x2, y2) in all_boxes:
